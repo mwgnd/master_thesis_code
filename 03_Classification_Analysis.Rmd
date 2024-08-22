@@ -1,0 +1,300 @@
+---
+title: "03_Classification_Analysis"
+author: "Manuel Weigand"
+date: "2024-03-01"
+output: html_document
+---
+
+# Setup
+
+```{r}
+
+# load packages
+
+pacman::p_load(tidyverse, lubridate, scales, patchwork)
+
+# note starttime
+start <- Sys.time()
+
+```
+# Load Data
+
+```{r}
+#load dataset
+data_wNA_wL <- readRDS("~/development/master_thesis_code/Data/Save_Files/data_wNA_wL.rds")
+
+# load predictions
+
+predictions <- read_csv("~/development/master_thesis_code/Data/Dataset/predictions.csv")
+
+# load cluster file
+
+cluster <- readRDS("~/development/master_thesis_code/Data/Save_Files/cluster.rds")
+
+```
+# Merge Files
+```{r}
+
+# check if rows are fine
+head(data_wNA_wL$raw_text) == head(predictions$raw_text)
+tail(data_wNA_wL$raw_text) == tail(predictions$raw_text)
+
+# merge files
+
+data_wNA_wL <- data_wNA_wL %>%
+  mutate(prediction = predictions$predictions) 
+
+# add cluster to dataset
+membership <- data.frame(names = cluster$names, cluster = cluster$membership)
+
+data_wNA_wL <- data_wNA_wL %>%
+  left_join(membership, by = c("channel_name" = "names"))
+
+```
+# Plots
+## Counts
+### Preparation
+```{r}
+# change timestamp to date
+
+data_wNA_wL <- data_wNA_wL %>%
+  mutate(Timestamp = as.Date(datetime))#%>%
+  #mutate(Timestamp = floor_date(Timestamp, "week", week_start = getOption("lubridate.week.start", 1))) 
+
+# summarize counts per day
+all_n <- data_wNA_wL %>% 
+  group_by(Timestamp) %>% 
+  summarise(count = n())
+
+pos_n <- data_wNA_wL %>% 
+  filter(prediction == 1) %>%
+  group_by(Timestamp) %>%
+  summarise(count_pos = n())
+
+counts_time <- merge(all_n, pos_n, by = "Timestamp", all.x = T) %>%
+  mutate(share = count_pos / count) %>%
+  mutate(share = ifelse(is.na(share), 0, share))
+```
+
+### Total Message Count
+```{r}
+
+summary(counts_time)
+sum(counts_time$count)
+sum(counts_time$count_pos)
+
+# plot count of message over time
+ggplot(counts_time, aes(x = Timestamp, y = count)) +
+  geom_line(size = 0.1) +
+  geom_smooth(method="gam", formula = y~s(x), size = 0.5, color = "black") +
+  scale_x_date(date_breaks= "1 year", date_labels="%Y") +
+  #scale_y_continuous(limits = c(0,8000), breaks = seq(0,80000, by = 2000)) +
+  geom_hline(yintercept = mean(counts_time$count, na.rm=TRUE), color= "black",
+             linetype = "longdash", size = 0.3) +
+  labs(x= NULL, y = "Anzahl Nachrichten") +
+  theme_bw(base_size = 12) +
+  theme(axis.title.y = element_text(size = 12),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.8))
+
+ggsave("~/development/master_thesis_code/Plots/total_message_count.png", dpi = 300, width = 10, height = 5)
+
+
+
+```
+```{r}
+# plot count of message over time
+ggplot(counts_time, aes(x = Timestamp, y = count_pos)) +
+  geom_line(size = 0.1) +
+  geom_smooth(method="gam", formula = y~s(x), size = 0.5, color = "black") +
+  scale_x_date(date_breaks= "1 year", date_labels="%Y") +
+  scale_y_continuous(limits = c(0,1200), breaks = seq(0,2000, by = 200)) +
+  geom_hline(yintercept = mean(counts_time$count_pos, na.rm=TRUE), color= "black",
+             linetype = "longdash", size = 0.3) +
+  labs(x= NULL, y = "Anzahl Nachrichten") +
+  theme_bw(base_size = 12) +
+  theme(axis.title.y = element_text(size = 12),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.8))
+
+ggsave("~/development/master_thesis_code/Plots/total_pos_message_count.png", dpi = 300, width = 10, height = 5)
+
+
+
+```
+
+### Pos Message Share
+```{r}
+
+share_plot <- counts_time %>%
+    #mutate(Timestamp = floor_date(Timestamp, "week", week_start = getOption("lubridate.week.start", 1))) %>%
+    ggplot(aes(x = Timestamp, y = share)) +
+    #geom_line(size = 0.1) + 
+    geom_smooth(method="gam", formula = y~s(x), size = 0.8, color = "black") +
+    geom_hline(yintercept = mean(counts_time$share, na.rm=TRUE), color= "black",
+               linetype = "longdash", size = 0.3) +
+    theme_bw(base_size = 10) +
+    theme(plot.margin = unit(c(2,1,1,1), "lines")) +
+    scale_y_continuous(labels = scales::percent, limits = c(0, 0.20)) +
+    scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month")  +
+    labs(x= NULL, y = "Anteil Verschwörungserzählungen", title = "Gesamtes Netzwerk") +
+    theme(axis.title.y = element_text(size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))  
+
+share_plot
+
+
+
+```
+
+## Seedlist
+### Preparation
+```{r}
+# seedlist
+seedlist_df <- read.csv("~/development/master_thesis_code/Data/Files/seedlist.csv", header = F,
+                      col.names = c("channels"))
+seedlist <- seedlist_df$channels
+
+
+
+
+# summarize counts per day
+seed_n <- data_wNA_wL %>% 
+  filter(channel_name %in% seedlist) %>%
+  group_by(Timestamp) %>%
+  summarise(count = n())
+
+seed_pos_n <- data_wNA_wL %>% 
+  filter(channel_name %in% seedlist) %>%
+  filter(prediction == 1) %>%
+  group_by(Timestamp) %>%
+  summarise(count_pos = n())
+
+counts_time_seed <- merge(seed_n, seed_pos_n, by = c("Timestamp"), all.x = T) %>%
+  mutate(share = count_pos / count) %>%
+  mutate(share = ifelse(is.na(share), 0, share))
+
+
+```
+### Plot
+```{r}
+seed_plot <- counts_time_seed %>%
+    #mutate(Timestamp = floor_date(Timestamp, "week", week_start = getOption("lubridate.week.start", 1))) %>%
+    ggplot(aes(x = Timestamp, y = share)) +
+    #geom_line(size = 0.1) + 
+    geom_smooth(method="gam", formula = y~s(x), size = 0.8, color = "black") +
+    geom_hline(yintercept = mean(counts_time_seed$share, na.rm=TRUE), color= "black",
+               linetype = "longdash", size = 0.3) +
+    theme_bw(base_size = 10) +
+    theme(plot.margin = unit(c(2,1,1,1), "lines")) +
+    scale_y_continuous(labels = scales::percent, limits = c(0, 0.2)) +
+    scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month")  +
+    labs(x= NULL, y = "Anteil Verschwörungserzählungen", title = "Querdenken Seedlist") +
+    theme(axis.title.y = element_text(size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))  
+
+seed_plot
+```
+### Combine
+```{r}
+
+grid1 <- plot_grid(share_plot, seed_plot, ncol = 2)
+
+grid1
+
+ggsave("~/development/master_thesis_code/Plots/total_pos_all_seed.png", grid1, dpi = 300)
+
+```
+
+## Plots per Community
+### Preparation
+```{r}
+# per cluster
+
+cluster_to_keep <- c(1,2,3,5,10,14) 
+
+
+# summarize counts per day
+clust_n <- data_wNA_wL %>% 
+  filter(cluster %in% cluster_to_keep) %>%
+  group_by(Timestamp, cluster) %>%
+  summarise(count = n())
+
+clust_pos_n <- data_wNA_wL %>% 
+  filter(cluster %in% cluster_to_keep) %>%
+  filter(prediction == 1) %>%
+  group_by(Timestamp, cluster) %>%
+  summarise(count_pos = n())
+
+counts_time_cluster <- merge(clust_n, clust_pos_n, by = c("Timestamp", "cluster"), all.x = T) %>%
+  mutate(share = count_pos / count) %>%
+  mutate(share = ifelse(is.na(share), 0, share))
+
+
+counts_time_cluster %>%
+  group_by(cluster) %>%
+  summarise(mean_share = mean(share, na.rm = T),
+            sd_share = sd(share, na.rm = T),
+            median = median(share, na.rm = T)) %>%
+  kableExtra::kbl(caption = "Recreating booktabs style table") %>%
+  kableExtra::kable_classic(full_width = F, html_font = "Cambria")
+
+
+```
+### Plots
+```{r}
+
+cluster <- c(1,2,3,5,10,14)
+
+labels <- vector()
+labels[1] <- "(1) QAnon"
+labels[2] <- "(2) Far-Right/AM/QD-Gruppen"
+labels[3] <- "(3) QD-Aktivisten/AM"
+labels[5] <- "(5) QD-Kanäle & Repräsentanten"
+labels[10] <- "(10) Far-Right (Österreich)/AM"
+labels[14] <- "(14) Freie Sachsen/Far-Right"
+
+
+plots <- map(cluster, function(c) {
+   x <- counts_time_cluster[counts_time_cluster$cluster == c,]
+   
+  counts_time_cluster %>%
+    filter(cluster == c) %>%
+    ggplot(aes(x = Timestamp, y = share)) +
+    #geom_line(size = 0.1) + 
+    geom_smooth(method="gam", formula = y~s(x), size = 0.5, color = "black") +
+    geom_hline(yintercept = mean(x$share, na.rm=TRUE), color= "black",
+               linetype = "longdash", size = 0.3) +
+    theme_bw(base_size = 10) +
+    theme(plot.margin = unit(c(2,1,1,1), "lines")) +
+    scale_y_continuous(labels = scales::percent, limits = c(0, 0.25)) +
+    scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month")  +
+    labs(x= NULL, y = "Anteil", title = labels[c]) +
+    theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))   
+})
+
+
+library(cowplot)
+grid <- plot_grid(plots[[1]],plots[[2]],plots[[3]], plots[[4]], plots[[5]], plots[[6]])
+grid
+
+
+
+ggsave("~/development/master_thesis_code/Plots/cluster_cons.png", grid, dpi = 300, width = 10, height = 7)
+
+
+
+
+
+```
+

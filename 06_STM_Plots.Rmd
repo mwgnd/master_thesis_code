@@ -1,0 +1,748 @@
+---
+title: "06_STM_Plots"
+author: "Manuel Weigand"
+date: "2024-03-14"
+output: html_document
+---
+
+# Setup
+```{r}
+
+
+# load packages
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, data.table, quanteda, stm, stminsights, tidystm, tidytext, kableExtra)
+
+# note starttime
+start <- Sys.time()
+
+```
+# Load Data
+
+```{r}
+load("~/development/master_thesis_code/Data/Models/final_model_data.rdata")
+
+```
+# Topic Proportions Tables
+```{r}
+#per-document-per-topic
+stm_gamma <- tidy(model, matrix = "gamma",
+                  document_names = names(out$documents))
+# per-term-per-topic
+stm_beta <- tidy(model, matrix = "beta")
+
+# top 10 terms (probabilities)
+top_terms <- stm_beta %>%
+  arrange(beta) %>%
+  group_by(topic) %>%
+  top_n(5, beta) %>%
+  arrange(-beta) %>%
+  select(topic, term) %>%
+  summarise(terms = list(term)) %>%
+  mutate(terms = map(terms, paste, collapse = ", ")) %>% 
+  unnest()
+
+# top 10 termx (frex)
+topfrex <- function(model, n = 5) {
+  out <- t(labelTopics(model, n = 5)[["frex"]])
+  colnames(out) <- seq_len(model$settings$dim$K)
+  as_tibble(out) %>% 
+    mutate(top = row_number()) %>%
+    lapply(function(x) paste(x, collapse = ", ")) %>%
+    as.tibble() %>%
+    gather(key = "topic", value = "frex") %>%
+    filter(topic != "top") %>%
+    mutate(topic = as.integer(topic))
+}  
+
+top_frex <- topfrex(model, n = 5)
+
+
+topic_labels <- readxl::read_excel("~/development/master_thesis_code/Data/Files/topic_description.xlsx")
+
+# proportion of topics with top (props) and frex 
+gamma_terms <- stm_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma)) %>%
+  left_join(top_terms, by = "topic") %>%
+  left_join(top_frex, by = "topic") %>%
+  left_join(topic_labels, by = c("topic" = "Topic")) %>%
+  mutate(topic = reorder(topic, gamma)) %>%
+  mutate(Kategorie = factor(Kategorie, levels = c("Covid-19",
+                                                  "(Rechts)-Populismus und Anti-Elitismus",
+                                                  "Verschwörungserzählungen",
+                                                  "Globale Konfliktlagen",
+                                                  "Protest",
+                                                  "Politik & Ökonomie",
+                                                  "Wahrheit, Wissen und Erkenntnis",
+                                                  "Organisation",
+                                                  "Werbung",
+                                                  "Sonstiges"))) 
+
+# All Topic and Proabilities (for Appendix)
+kbl <- gamma_terms %>%
+  arrange(desc(gamma)) %>%
+  mutate(Rang = row_number()) %>%
+  filter(Drop != TRUE) %>%
+  select(topic, gamma, Label, Kategorie, Rang) %>%
+  #mutate(gamma = round(gamma,2)) %>%
+  mutate(gamma = Format(gamma,digits = 3, ldigits = 0)) %>%
+  arrange(Kategorie) %>%
+  select(-Kategorie) %>%
+  relocate(gamma, .after = Rang)
+
+kbl(kbl,caption = "Topic Proportion", booktabs = TRUE, format = "latex") %>%
+  kable_classic() %>%
+  pack_rows(index = table(gamma_terms$Kategorie[gamma_terms$Drop != TRUE]))
+
+# covid related topics
+
+c19_topics <- c(18,22,39,40,48,58)
+
+c19 <- gamma_terms %>%
+  arrange(desc(gamma)) %>%
+  mutate(Rang = row_number()) %>%
+  filter(Drop != TRUE) %>%
+  select(topic, gamma, Label, Kategorie, terms, frex) %>%
+  #mutate(gamma = round(gamma,2)) %>%
+  mutate(gamma = Format(gamma,digits = 3, ldigits = 0)) %>%
+  arrange(Kategorie) %>%
+  select(-Kategorie) %>%
+  select(-Label) %>%
+  filter(topic %in% c19_topics) %>%
+  relocate(gamma, .after = topic) %>%
+  mutate(example = "")
+
+kbl(c19,caption = "Topic Proportion", booktabs = TRUE, format = "latex") %>%
+  kable_classic() 
+
+
+# topics related to conspiracy narratives
+
+cons_topics <- c(13,20,24,32,47,52,54)
+
+cons <- gamma_terms %>%
+  arrange(desc(gamma)) %>%
+  mutate(Rang = row_number()) %>%
+  filter(Drop != TRUE) %>%
+  select(topic, gamma, Label, Kategorie, terms, frex) %>%
+  #mutate(gamma = round(gamma,2)) %>%
+  mutate(gamma = Format(gamma,digits = 3, ldigits = 0)) %>%
+  arrange(Kategorie) %>%
+  select(-Kategorie) %>%
+  select(-Label) %>%
+  filter(topic %in% cons_topics) %>%
+  relocate(gamma, .after = topic) %>%
+  mutate(example = "")
+
+kbl(cons,caption = "Topic Proportion", booktabs = TRUE, format = "latex") %>%
+  kable_classic() 
+
+
+# topics from other catergories
+
+
+oth_topics <- c(3,9,16,37,41,31,52)
+
+oth <- gamma_terms %>%
+  arrange(desc(gamma)) %>%
+  mutate(Rang = row_number()) %>%
+  filter(Drop != TRUE) %>%
+  select(topic, gamma, Label, Kategorie, terms, frex) %>%
+  #mutate(gamma = round(gamma,2)) %>%
+  mutate(gamma = Format(gamma,digits = 3, ldigits = 0)) %>%
+  arrange(Kategorie) %>%
+  select(-Kategorie) %>%
+  select(-Label) %>%
+  filter(topic %in% oth_topics) %>%
+  relocate(gamma, .after = topic) %>%
+  mutate(example = "") %>%
+  arrange(desc(gamma)) 
+
+kbl(oth,caption = "Topic Proportion", booktabs = TRUE, format = "latex") %>%
+  kable_classic() 
+
+
+
+
+
+
+
+```
+# Topic Proportions Plot
+```{r}
+
+#per-document-per-topic
+stm_gamma <- tidy(model, matrix = "gamma",
+                  document_names = names(out$documents))
+
+gamma_terms <- stm_gamma %>%
+  group_by(topic) %>%
+  summarise(gamma = mean(gamma)) %>%
+  arrange(desc(gamma))
+
+# load labels
+topic_labels <- readxl::read_excel("~/development/master_thesis_code/Data/Files/topic_description.xlsx")
+
+gamma_terms <- gamma_terms %>%
+  left_join(topic_labels, by = c("topic" = "Topic")) %>%
+  filter(Drop == FALSE) %>%
+  select(topic, gamma, Label) %>%
+  mutate(Label = reorder(Label, gamma))
+
+used <- c(18,48,22,58,40,39,24,52,47,13,32,54,20,3,53,41,37,9,31)
+
+gamma_terms %>%
+  mutate(fill = case_when(topic %in% used ~ "used",
+                          TRUE ~ "not used")) %>%
+  ggplot(aes(Label, gamma, fill = fill)) +
+  geom_col(show.legend = FALSE, width = 0.9) +
+  geom_hline(yintercept = 0.0166, color= "black",
+               linetype = "longdash", size = 0.3) +
+  #geom_text(hjust = 0, nudge_y = 0.0005, size = 3,
+            #family = "IBMPlexSans") +
+  coord_flip() +
+  scale_y_continuous(expand = c(0,0),
+                     limits = c(0, 0.05)) +
+  theme_bw() +
+  scale_fill_grey(end = 0, start = 0.7) +
+  labs(x = "Topic",
+       y = "Topic Probability") +
+  theme(axis.text=element_text(size=8),
+        axis.title=element_text(size=8),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5)) -> prop_plot
+
+
+
+ggsave("~/development/master_thesis_code/Plots/prop_plot.png", plot = prop_plot, dpi = 300)
+
+
+
+
+```
+
+
+# Exploration 
+## Effects of Community/Cluster Variable
+
+```{r}
+
+# get effects from stm in tidy format
+effects_tidy <-  extract.estimateEffect(prep,
+                                        covariate = "cluster", 
+                                        model = model,
+                                        method = "pointestimate",
+                                        labeltype = "score")
+
+# save plots for each topic
+topics <- 1:60
+
+for (t in topics) {
+  effects_tidy %>% 
+    filter(topic == t) %>%
+    ggplot(aes(x = covariate.value, y = estimate)) +
+    geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), width = 0.1, size = 0.8) +
+    geom_point(size = 3) +
+    coord_flip() + 
+    theme_bw() +
+    labs(x = 'Community', y = 'Topic Proportion',
+       title = paste("Topic" , t),
+       caption = effectstidy$label[effectstidy$topic == t])
+  
+  ggsave(paste0("~/development/master_thesis_code/Plots/STM_Pointestimate/",
+                "Topic", t,"_pointestimate", ".png"), device = "png") 
+}
+
+
+```
+## Difference
+```{r}
+# get effects from stm in tidy format
+
+effects_tidy %>% 
+  filter(topic %in% c(52)) %>%
+  filter(covariate.value != 3) %>%
+  ggplot(aes(x = covariate.value, y = estimate)) +
+  geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), width = 0.1, size = 0.8) +
+  geom_point(size = 1) +
+  coord_flip() + 
+  theme_bw() +
+  facet_wrap(~topic, ncol = 1) 
+
+
+
+plot(prep, 
+     covariate = "cluster", 
+     topics = c(22,38,39,40,48,58,41,52,13,32,47,54,3),
+     model = model,
+     method = "difference",
+     cov.value1 = 5,
+     cov.value2 = 14,
+     xlim = c(-0.02, 0.02),
+     labeltype = "custom",
+     custom.labels = c(22,38,39,40,48,58,41,52,13,32,47,54,3),
+     main = "Effect of Liberal vs. Conservative",
+     xlab = "Sachsen...Querdenken")
+
+
+
+effects_tidy_diff <-  extract.estimateEffect(prep,
+                                        covariate = "cluster", 
+                                        model = model,
+                                        method = "difference",
+                                        cov.value1 = 5,
+                                        cov.value2 = 14,
+                                        labeltype = "score")
+
+plot(prep, 
+     covariate = "cluster", 
+     topics = c(22,38,39,40,48,58,41,52,13,32,47,54,3),
+     model = model,
+     method = "difference",
+     cov.value1 = 5,
+     cov.value2 = 14,
+     xlim = c(-0.02, 0.02),
+     labeltype = "custom",
+     custom.labels = c(22,38,39,40,48,58,41,52,13,32,47,54,3),
+     main = "Effect of Liberal vs. Conservative",
+     xlab = "Sachsen...Querdenken")
+
+effects_tidy_diff %>% 
+  filter(topic %in% c(22,38,39,40,48,58,41,52,13,32,47,54,3)) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = topic)) +
+  geom_pointrange() +
+  geom_hline(yintercept = 0) +
+  geom_text(vjust = 2, nudge_x = 0.05) +
+  theme_classic() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('Marginal Effect',limits=c(-0.02,0.02), n.breaks = 5) 
+
+
+```
+
+## Effects of Time Variable
+```{r}
+
+# get effects from stm in tidy format
+effects_tidy_day <-  extract.estimateEffect(prep,
+                                        covariate = "day", 
+                                        model = model,
+                                        method = "continuous",
+                                        labeltype = "score")
+# time index
+day_seq <- data.frame(date = seq(from = as.Date("2020-05-01"), to = as.Date("2023-11-30"), by = "day"),
+                      day = min(effects_tidy_day$covariate.value):max(effects_tidy_day$covariate.value))
+
+# merge time index with effects
+effects_tidy_day <- effects_tidy_day %>%
+  mutate(day = as.integer(covariate.value)) %>%
+  left_join(day_seq, by = "day")
+
+# save plots for each topic
+for (t in topics) {
+  effects_tidy_day %>%
+    filter(topic == t) %>%
+    ggplot(aes(x = date, y = estimate)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.2)  +
+    theme_bw() + 
+    scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month") +
+    labs(x = NULL, y = 'Topic Proportion',
+        title = paste("Topic" , t),
+        caption = effects_tidy_day$label[effects_tidy_day$topic == t])
+  
+  ggsave(paste0("~/development/master_thesis_code/Plots/STM_Time/",
+                "Topic", t,"_time", ".png"), device = "png") 
+}
+
+  
+  
+```
+## Effect of Cluster Variable on Time
+```{r}
+
+effect_interaction <- lapply(c(1,2,3,5,10,14), function(i) {
+  extract.estimateEffect(x = prep,
+                         covariate = "day",
+                         method = "continuous",
+                         model = model,
+                         labeltype = "score",
+                         moderator = "cluster",
+                         moderator.value = i)
+})
+
+effect_interaction <- do.call("rbind", effect_interaction) 
+
+effect_interaction <- effect_interaction %>% 
+  mutate(day = as.integer(covariate.value)) %>%
+  left_join(day_seq, by = "day")
+  
+for (t in topics) {
+  effect_interaction  %>%
+    filter(topic == t) %>%
+    #filter(moderator == 5) %>%
+    mutate(moderator = as.factor(moderator.value)) |>
+    ggplot(aes(x = date, y = estimate, color = moderator,
+    group = moderator, fill = moderator)) +
+    geom_line() +
+    geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.2)  +
+    theme_bw() + 
+    scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month") +
+    labs(x = NULL, y = 'Topic Proportion',
+        title = paste("Topic" , t),
+        caption = effect_interaction$label[effect_interaction$topic == t])
+  
+  ggsave(paste0("~/development/master_thesis_code/Plots/STM_Int/",
+                "Topic", t,"_int", ".png"), device = "png") 
+
+}
+
+
+
+```
+
+# Final Plots
+## Corona related Topics (Time)
+```{r}
+
+pacman::p_load(cowplot)
+
+
+labels_c19 <- vector()
+labels_c19[18] <- "Gesetze, Grundrechte & \npers. Freiheit"
+labels_c19[22] <- "Impfung: Schäden und \nNebenwirkungen"
+labels_c19[39] <- "Wirkung Covid-19 Maßnahmen \nauf Kinder"
+labels_c19[40] <- "Daten & Berichte zu \nTodesfälllen"
+labels_c19[48] <- "Skeptizismus: 3-G, Testzweifel \nund Virusexistenz"
+labels_c19[58] <- "Maßnahmen, Lockdown & \nKontakteinschränkungen"
+
+
+
+
+plots <- map(c19_topics, function(t) {
+  effects_tidy_day %>%
+  filter(topic == t) %>%
+  ggplot(aes(x = date, y = estimate)) +
+  geom_line() +
+  geom_line(aes(x = date, y = ci.lower),
+            colour   = "black",
+            linetype = "dashed",
+            size=0.25) +
+  geom_line(aes(x = date, y = ci.upper),
+            colour   = "black",
+            linetype = "dashed",
+            size=0.25) +
+  geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.25,
+                 fill  = "grey")  +
+  theme_bw(base_size = 10) +
+  theme(plot.margin = unit(c(2,1,1,1), "lines")) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month")  +
+  scale_y_continuous(limits = c(0,0.035), breaks = seq(0,0.035, by = 0.005)) +
+  labs(x = NULL, y = 'Topic Proportion', title = labels_c19[t]) +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))   
+})
+
+
+pacman::p_load(cowplot)
+
+p1 <- plot_grid(plots[[1]],plots[[2]],plots[[3]], plots[[4]], plots[[5]], plots[[6]])
+p1              
+                
+
+ggsave("~/development/master_thesis_code/Plots/corona_topics.png", p1, dpi = 300)
+
+
+
+
+```
+## Conspiracy related Topics (Time)
+```{r}
+
+cons_topics <- c(13,20,32,47,52,54)
+
+labels_cons <- vector()
+labels_cons[13] <- "New World Order & \nGlobale Agenda"
+labels_cons[20] <- "Anthony Fauci & \nWuhan-Labor"
+labels_cons[52] <- "Nationale Souveränität & \nMigration (\"Großer Austausch\")"
+labels_cons[32] <- "QAnon: Pädophilie \nund Kinderhandel"
+labels_cons[47] <- "Great Reset & \nAgenda 2030"
+labels_cons[54] <- "Virus Ursprung \n(Soros, Rothschild, Gates...)"
+
+
+
+
+plots <- map(cons_topics, function(t) {
+  effects_tidy_day %>%
+  filter(topic == t) %>%
+  ggplot(aes(x = date, y = estimate)) +
+  geom_line() +
+  geom_line(aes(x = date, y = ci.lower),
+            colour   = "black",
+            linetype = "dashed",
+            size=0.25) +
+  geom_line(aes(x = date, y = ci.upper),
+            colour   = "black",
+            linetype = "dashed",
+            size=0.25) +
+  geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.25,
+                 fill  = "grey")  +
+  theme_bw(base_size = 10) +
+  theme(plot.margin = unit(c(2,1,1,1), "lines")) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month")  +
+  scale_y_continuous(limits = c(0,0.035), breaks = seq(0,0.035, by = 0.005)) +
+  labs(x = NULL, y = 'Topic Proportion', title = labels_cons[t]) +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))   
+})
+
+
+pacman::p_load(cowplot)
+
+p2 <- plot_grid(plots[[1]],plots[[2]],plots[[3]], plots[[4]], plots[[5]], plots[[6]])
+p2              
+     
+ggsave("~/development/master_thesis_code/Plots/cons_topics.png", p2, dpi = 300)
+
+
+
+
+
+```
+## Other Topics (Time)
+```{r}
+
+oth_topics <- c(3,59,41, 37,9,53)
+
+labels_oth <- vector()
+labels_oth[3] <- "Spiritualität & Esoterik"
+labels_oth[9] <- "Politik der \"Altparteien\""
+labels_oth[37] <- "Lieferengpässe, Inflation & \n\"grüne Deindustrialisierung\""
+labels_oth[41] <- "Ukraine Krieg"
+labels_oth[53] <- "Angst als Kontrollmittel & \nErkennen der Lüge"
+labels_oth[59] <- "Kriege & Nahost-Konflikt"
+
+
+plots <- map(oth_topics, function(t) {
+  effects_tidy_day %>%
+  filter(topic == t) %>%
+  ggplot(aes(x = date, y = estimate)) +
+  geom_line() +
+  geom_line(aes(x = date, y = ci.lower),
+            colour   = "black",
+            linetype = "dashed",
+            size=0.25) +
+  geom_line(aes(x = date, y = ci.upper),
+            colour   = "black",
+            linetype = "dashed",
+            size=0.25) +
+  geom_ribbon(aes(ymin = ci.lower, ymax = ci.upper), alpha = 0.25,
+                 fill  = "grey")  +
+  theme_bw(base_size = 10) +
+  theme(plot.margin = unit(c(2,1,1,1), "lines")) +
+  scale_x_date(date_breaks = "year", date_labels = "%Y", date_minor_breaks = "1 month")  +
+  scale_y_continuous(limits = c(0,0.055), breaks = seq(0,0.055, by = 0.005)) +
+  labs(x = NULL, y = 'Topic Proportion', title = labels_oth[t]) +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))   
+})
+
+
+pacman::p_load(cowplot)
+p2 <- plot_grid(plots[[1]],plots[[2]],plots[[3]], plots[[4]], plots[[5]], plots[[6]])
+p2             
+     
+ggsave("~/development/master_thesis_code/Plots/oth_topics.png", plot = p2, dpi = 300)
+
+
+
+
+
+```
+## Difference Plots
+
+```{r}  
+#difference plots
+## Querdenken (5) vs Freie Sachsen (14)
+c19_topics <- c(18,22,39,40,48,58)
+cons_topics <- c(13,20,32,47,52,54)
+oth_topics <- c(3,31,41, 37,9,53)
+  
+effects_tidy_diff <-  extract.estimateEffect(prep,
+                                        covariate = "cluster", 
+                                        model = model,
+                                        method = "difference",
+                                        cov.value1 = 5,
+                                        cov.value2 = 14)
+
+
+effects_tidy_diff <- effects_tidy_diff %>%
+  left_join(topic_labels, by = c("topic" = "Topic"))
+
+effects_tidy_diff$Label[effects_tidy_diff$topic == 3] <- "Spiritualität & Esoterik       "
+effects_tidy_diff$Label[effects_tidy_diff$topic == 41] <- "Ukraine Krieg       "
+effects_tidy_diff$Label[effects_tidy_diff$topic == 9] <- "Politik der \"Altparteien\"   "
+effects_tidy_diff$Label[effects_tidy_diff$topic == 53] <- "Angst als Kontrollmittel & Erkennen der Lüge  "
+
+d1 <- effects_tidy_diff %>% 
+  filter(topic %in% cons_topics) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = Label)) +
+  geom_pointrange(fatten = .5, size = 1) +
+  geom_hline(yintercept = 0, linetype="dotted") +
+  geom_text(hjust = 1.1,  size =2) +
+  theme_bw() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('',limits=c(-0.02,0.02), n.breaks = 5) +
+  labs(title = "Verschwörungserzählungen") +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7, hjust = 0.5),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+
+d2 <- effects_tidy_diff %>% 
+  filter(topic %in% c19_topics) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = Label)) +
+  geom_pointrange(fatten = .5, size = 1) +
+  geom_hline(yintercept = 0, linetype="dotted") +
+  geom_text(hjust = 1.1,  size =2) +
+  theme_bw() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('',limits=c(-0.02,0.02), n.breaks = 5) +
+  labs(title = "Covid19") +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7, hjust = 0.5),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))   
+
+d3 <- effects_tidy_diff %>% 
+  filter(topic %in% oth_topics) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = Label)) +
+  geom_pointrange(fatten = .5, size = 1) +
+  geom_hline(yintercept = 0, linetype="dotted") +
+  geom_text(hjust = 1.1,  size =2) +
+  theme_bw() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('Freie Sachsen (14)...Querdenken (5)',limits=c(-0.02,0.02), n.breaks = 5) +
+  labs(title = "Andere Kategorien") +
+  theme(axis.title.y = element_text(size = 8),
+        axis.title.x = element_text(size = 8),
+        plot.title = element_text(size=7, hjust = 0.5),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))  
+
+
+
+
+pacman::p_load(cowplot)
+p2 <- plot_grid(d1,d2,d3, ncol  = 1)
+p2             
+     
+ggsave("~/development/master_thesis_code/Plots/diff_topics5-14.png", plot = p2, dpi = 300)
+
+
+effects_tidy_diff <-  extract.estimateEffect(prep,
+                                        covariate = "cluster", 
+                                        model = model,
+                                        method = "difference",
+                                        cov.value1 = 5,
+                                        cov.value2 = 2)
+
+
+effects_tidy_diff <- effects_tidy_diff %>%
+  left_join(topic_labels, by = c("topic" = "Topic"))
+
+effects_tidy_diff$Label[effects_tidy_diff$topic == 3] <- "Spiritualität & Esoterik       "
+effects_tidy_diff$Label[effects_tidy_diff$topic == 41] <- "Ukraine Krieg       "
+effects_tidy_diff$Label[effects_tidy_diff$topic == 9] <- "Politik der \"Altparteien\"   "
+effects_tidy_diff$Label[effects_tidy_diff$topic == 53] <- "Angst als Kontrollmittel & Erkennen der Lüge  "
+
+d1 <- effects_tidy_diff %>% 
+  filter(topic %in% cons_topics) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = Label)) +
+  geom_pointrange(fatten = .5, size = 1) +
+  geom_hline(yintercept = 0, linetype="dotted") +
+  geom_text(hjust = 1.1,  size =2) +
+  theme_bw() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('',limits=c(-0.02,0.02), n.breaks = 5) +
+  labs(title = "Verschwörungserzählungen") +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7, hjust = 0.5),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))
+
+d2 <- effects_tidy_diff %>% 
+  filter(topic %in% c19_topics) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = Label)) +
+  geom_pointrange(fatten = .5, size = 1) +
+  geom_hline(yintercept = 0, linetype="dotted") +
+  geom_text(hjust = 1.1,  size =2) +
+  theme_bw() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('',limits=c(-0.02,0.02), n.breaks = 5) +
+  labs(title = "Covid19") +
+  theme(axis.title.y = element_text(size = 8),
+        plot.title = element_text(size=7, hjust = 0.5),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))   
+
+d3 <- effects_tidy_diff %>% 
+  filter(topic %in% oth_topics) %>%
+  ggplot(aes(as.factor(topic), estimate, ymin = ci.lower, ymax = ci.upper, label = Label)) +
+  geom_pointrange(fatten = .5, size = 1) +
+  geom_hline(yintercept = 0, linetype="dotted") +
+  geom_text(hjust = 1.1,  size =2) +
+  theme_bw() +
+  coord_flip() +
+  scale_x_discrete('Topic', labels = NULL) +
+  scale_y_continuous('Querdenken/Far-Right (2)...Querdenken (5)',limits=c(-0.02,0.02), n.breaks = 5) +
+  labs(title = "Andere Kategorien") +
+  theme(axis.title.y = element_text(size = 8),
+        axis.title.x = element_text(size = 8),
+        plot.title = element_text(size=7, hjust = 0.5),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        panel.background = element_rect(colour = "black", size=0.5))  
+
+
+
+
+pacman::p_load(cowplot)
+p2 <- plot_grid(d1,d2,d3, ncol  = 1)
+p2             
+     
+ggsave("~/development/master_thesis_code/Plots/diff_topics2-5.png", plot = p2, dpi = 300)
+
+
+
+
+
+
+```
+
+
+

@@ -1,0 +1,248 @@
+---
+title: "04_STM"
+author: "Manuel Weigand"
+date: "2024-02-12"
+output: html_document
+---
+# Setup
+```{r}
+
+
+# load packages
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, data.table, quanteda, stm)
+
+# note starttime
+start <- Sys.time()
+
+```
+# Load Data
+## Dataset
+```{r}
+#load dataset with cluster
+
+df <- readRDS("~/development/master_thesis_code/Data/Save_Files/data_wNA_wL_cluster_22_02.rds")
+
+
+# remove duplicates
+
+df_s <- df %>%
+  arrange(datetime) %>%
+  filter(!duplicated(raw_text))
+  
+df <- df %>%
+  filter(!duplicated(raw_text))
+
+# remove messages from spam flood attack
+df_nS <- df %>%
+  filter(datetime > "2020-12-19 00:00:00" & datetime < "2020-12-20 00:00:00") %>%
+  mutate(spam = str_detect(raw_text, "impfen euch alle|spamangriff"), 1, 0) %>%
+  filter(spam == 1) 
+
+df <- df %>% filter(!new_id %in% df_nS$new_id)
+rm(df_nS)
+
+
+```
+
+
+# Preprocessing
+```{r}
+bigrams <- readLines("~/development/master_thesis_code/Data/Files/bigrams.txt")
+
+# convert to latin1
+
+df <- df %>%
+  mutate(text = iconv(raw_text, from = "UTF-8", to = "latin1", sub = ""))
+
+
+# tokenize and create dfm
+token <- df %>% 
+  mutate(date = as.Date(datetime),
+         day = as.integer(date - min(date)), # convert to days since start for use as covariate
+         channel_id = as.factor(channel_id)) %>% 
+  corpus(docid_field = "new_id",
+         text_field = "text") %>% 
+  tokens(
+    remove_punct = TRUE,
+    remove_symbols = TRUE,
+    remove_numbers = TRUE,
+    remove_url = TRUE,
+    remove_separators = TRUE) %>%
+  tokens_remove(
+    pattern = readLines("~/development/master_thesis_code/Data/Files/german_stopwords_full.txt"),
+    valuetype = "fixed"
+  ) %>%
+  tokens_remove(pattern = "^@", valuetype = "regex") %>%
+  tokens_remove(pattern = "^---", valuetype = "regex") %>%
+  tokens_remove(
+    pattern = readLines("~/development/master_thesis_code/Data/Files/specific_stop.txt"),
+    valuetype = "fixed"
+  ) %>%
+  tokens_compound(
+    pattern = phrase(c(bigrams)),
+    valuetype = "fixed",
+    concatenator = "_",
+    case_insensitive = TRUE,
+  ) %>%
+  tokens_select(min_nchar = 3) 
+
+
+
+dfm <- token %>%
+  dfm(tolower = TRUE)
+
+dfm_trim <- dfm %>%
+  dfm_trim(min_docfreq = 0.0005,
+           docfreq_type = "prop") %>%
+  dfm_subset(ntoken(.) > 3)
+
+
+```
+# Structural Topic Model
+## Prepare Data
+```{r}
+
+# cluster to factor
+
+dfm_trim$cluster <- as.factor(dfm_trim$cluster)
+
+# prepare text for later evaluation
+
+dfm_df <- df %>%
+  filter(new_id %in% dfm_trim@docvars$docid_) %>%
+  select(new_id,raw_text,text ,channel_name, cluster)
+
+# convert to stm
+out <- convert(dfm_trim, to = 'stm')
+
+```
+## Model
+
+
+## Search K
+
+```{r}
+library(furrr)
+dir.create("~/development/master_thesis_code/stms/", showWarnings = FALSE)
+plan(multisession, workers = 36L)
+K <- c(25,30,35,40,45,50,55,60,65)
+options(future.globals.maxSize= 3145728000)
+
+
+
+
+#prototyp
+
+# dfm_proto <- dfm_sample(dfm, size = 100)
+# out <- convert(dfm_proto, to = 'stm')
+
+files <- future_map(
+    .x = K,
+    .f = function(k) {
+      
+      save_name <- paste0("~/development/master_thesis_code/stms/stm_model_", k, ".rds")
+      
+      if (!file.exists(save_name)) {
+    
+        model <- stm(documents = out$documents,
+                     vocab = out$vocab,
+                     data = out$meta,
+                     K = k, 
+                     seed = 300,
+                     prevalence = ~day * cluster,
+                     verbose = FALSE)
+        saveRDS(model, save_name)
+        
+      }
+      
+      return(save_name)
+      
+    },    
+    .options = furrr_options(seed = 300),
+    .progress = interactive()
+  )
+
+models <- tibble(
+  K = K,
+  topic_model = map(files, readRDS)
+)
+
+saveRDS(models, "~/development/master_thesis_code/Data/Models/models25_60.rds")
+
+save(dfm_df,dfm_trim, out, file = "~/development/master_thesis_code/Data/Models/model_files.Rdata")
+
+
+```
+
+```{r}
+files <- list.files("~/development/master_thesis_code/stms/", pattern = ".rds", full.names = TRUE)
+
+models <- tibble(
+  K = K,
+  topic_model = map(files, readRDS)
+)
+
+load("~/development/master_thesis_code/Data/Models/model_files.Rdata")
+
+
+
+```
+
+### Selecting the 'best' model
+
+Calculate important model metrics:
+
+```{r stm_data, message=FALSE, warning=FALSE}
+
+model_metrics <- models %>%
+  mutate(
+    exclusivity = map(topic_model, exclusivity),
+    semantic_coherence = map(topic_model, semanticCoherence, dfm_trim)
+  )
+
+models_metric <- model_metrics %>% 
+  transmute(K,
+            `Semantic coherence` = map_dbl(semantic_coherence, mean),
+            Exclusivity = map_dbl(exclusivity, mean))
+
+saveRDS(models_metric, "~/development/master_thesis_code/Data/Save_Files/models_metric.rds")
+
+models_metric <- readRDS("~/development/master_thesis_code/Data/Save_Files/models_metric.rds")
+
+```
+#### Plot
+```{r}
+
+sc_ex <- ggplot(models_metric, aes(`Semantic coherence`, Exclusivity)) +
+  geom_point() +
+  geom_text(label= models_metric$K, hjust = 0, nudge_x = 0.3) +
+  theme_classic()
+
+ggsave("~/development/master_thesis_code/Plots/sc_ex_plot.pdf",sc_ex)
+
+```
+
+## Choose Model
+```{r}
+k <- 60
+model <- models %>%
+  filter(K == k) %>%
+  pull(topic_model) %>%
+  .[[1]]
+
+rm(models)
+```
+
+## Estimate Effects
+```{r}
+
+prep <- estimateEffect(1:60 ~ s(day) * cluster, model,
+                            meta = out$meta)
+
+
+save(dfm_df, out, model, prep, file = "~/development/master_thesis_code/Data/Models/final_model_data.rdata")
+
+```
+

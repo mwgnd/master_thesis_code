@@ -1,0 +1,384 @@
+---
+title: "03_Network"
+author: "Manuel Weigand"
+date: "2024-01-24"
+output: html_document
+---
+
+# Setup
+
+```{r}
+
+# load packages
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, igraph, backbone, formattable, kableExtra)
+
+# note starttime
+start <- Sys.time()
+
+```
+# Load Network Data
+```{r}
+# load dataset of forwarded messages from csv
+
+df_net <- readRDS(file = "~/development/master_thesis_code/Data/Save_Files/data_network.rds")
+
+
+# load full dataset
+
+data_wNA_wL <- readRDS("~/development/master_thesis_code/Data/Save_Files/data_wNA_wL.rds")
+
+```
+
+
+
+# Create Network Graph
+```{r}
+# create edge list (only edges between entities in the dataset)
+edgelist <- df_net %>%
+  transmute(source = channel_name, target = forward_from) %>%
+  filter(target %in% df_net$channel_name)
+
+# create graph based on edgelist
+graph <- graph.data.frame(edgelist, directed = TRUE)
+
+# remove possiple (self)-loops
+graph_simp <- simplify(graph, remove.multiple = FALSE, remove.loops = TRUE)
+
+# create directed weighted graph (weights based on n of forwards)
+graph_weighted <- graph_from_adjacency_matrix(get.adjacency(graph_simp), mode = "directed", weighted = TRUE)
+
+
+print(graph_density <- edge_density(graph_weighted, loops = FALSE))
+
+
+
+
+```
+
+# Network Clustering
+```{r}
+
+# backbone of graph (maybe not nessecyry with small scraped network)
+backbone <- disparity(graph_weighted, alpha = 0.05, narrative = TRUE)
+
+cluster_backbone <- cluster_infomap(backbone, e.weights = E(backbone)$weight, modularity = TRUE)
+communities(cluster_backbone)
+
+# cluster with infomap algorithm
+cluster <- cluster_infomap(graph_weighted, e.weights = E(graph_weighted)$weight, modularity = TRUE)
+
+communities(cluster)
+# save communities object
+saveRDS(cluster, "~/development/master_thesis_code/Data/Save_Files/cluster.rds")
+
+```
+## Load Cluster File
+```{r}
+# load communities object
+cluster <- readRDS("~/development/master_thesis_code/Data/Save_Files/cluster.rds")
+```
+
+
+# Props of Clusters
+
+```{r}
+
+# dataframe with membership info
+
+membership <- data.frame(names = cluster$names, cluster = cluster$membership)
+
+
+# messages per channel
+
+channels <- data_wNA_wL %>%
+  group_by(channel_name) %>%
+  filter(channel_name %in% cluster$names) %>%
+  summarise(n = n()) 
+
+
+# join cluster membership info with messages per channel
+
+channels <- channels %>%
+  left_join(membership, by = c("channel_name" = "names")) 
+
+# organisation channels
+
+
+cluster_prop <- channels %>%
+  group_by(cluster) %>%
+  summarise(groups = n(),
+            total = sum(n)) %>%
+  ungroup() %>%
+  mutate(groups_share = groups / sum(groups)) %>%
+  mutate(messages_share = total / sum(total)) %>%
+  mutate(prop_groups = percent(prop.table(groups))) %>%
+  mutate(prop_messages = percent(prop.table(total)))
+
+
+
+```
+
+# Network Centrality
+```{r}
+
+# calculate some centrality values of the nodes of the network
+
+centrality_scores <- tibble(names = V(graph_weighted)$name,
+                            degree = degree(graph_weighted, mode = "all", normalized = T, loops = F),
+                            indegree = degree(graph_weighted, mode = "in", normalized = T, loops = F),
+                            outdegree = degree(graph_weighted, mode = "out", normalized = T, loops = F),
+                            # weights used by default
+                            nbetweenness = betweenness(graph_weighted, directed = T, normalized = T),
+                            betweenness = betweenness(graph_weighted, directed = T, normalized = F),
+                            authority = authority_score(graph_weighted, scale = T)$vector,
+                            eigenc = eigen_centrality(graph_weighted, scale = T)$vector)
+
+# join with cluster membership info
+
+channels <- channels %>%
+  left_join(centrality_scores, by = c("channel_name" = "names")) 
+
+
+# top 5 (indegree) channels per cluster 
+top5 <- channels %>%                                     
+  arrange(desc(indegree)) %>% 
+  group_by(cluster) %>%
+  slice(1:5)  
+  
+
+```
+
+
+# Tables
+## Channel/Group Labels
+```{r}
+
+# read in labels from Zehring & Domahidi, 2023
+
+zd_labels <- read_csv("~/development/master_thesis_code/Data/Files/Querdenken_Labeled_Backbone.csv") %>%
+  select(channel_lower, label_1, label_2, label_3)
+
+# Use only labels available on the network
+channel_labels <- membership %>%
+  left_join(zd_labels, by = c("names" = "channel_lower")) 
+
+# export for further labeling
+
+rio::export(channel_labels,
+            "~/development/master_thesis_code/Data/Files/channels_to_label.xlsx", overwrite = TRUE)
+
+#import labeled channels
+
+channel_labels <- rio::import("~/development/master_thesis_code/Data/Files/channel_labels.xlsx")
+
+cluster_w_labels <- tibble(cluster = unique(channel_labels$cluster),
+               querdenken = table(channel_labels$label_1,channel_labels$cluster)[1,],
+               far_right = table(channel_labels$label_2,channel_labels$cluster)[1,],
+               alternative_media = table(channel_labels$label_3,channel_labels$cluster)[1,],
+               qanon = table(channel_labels$label_4,channel_labels$cluster)[1,],
+               freie_sachsen = table(channel_labels$label_5,channel_labels$cluster)[1,],
+               sonstige = table(channel_labels$label_6,channel_labels$cluster)[1,])
+
+
+# label counts
+
+cluster_w_labels %>%
+  summarise(querdenken = sum(querdenken),
+            far_right = sum(far_right),
+            alternative_media = sum(alternative_media),
+            qanon = sum(qanon),
+            freie_sachsen = sum(freie_sachsen),
+            sonstige = sum(sonstige)) 
+
+
+library(kableExtra)
+
+cluster_top <- top5 %>%
+  select(channel_name, cluster) %>%
+  group_by(cluster) %>%
+  summarise_all(~ paste(., collapse = ", ")) %>%
+  rename(top5 = channel_name)
+
+
+# generate overview tables
+
+all_table <- merge(cluster_prop, cluster_w_labels, by = "cluster")  
+
+
+table <- all_table %>%
+  arrange(desc(prop_groups)) %>%
+  select(-groups_share, -messages_share) %>%
+  kbl(format="latex", booktabs = TRUE) %>%
+  kable_classic()
+```
+
+## Table Centrality Scores Top 15
+```{r}
+
+# table of important nodes (indegree & betweenness)
+
+combined_labels <- channel_labels %>%
+  unite(labels,label_1:label_6, sep = ", ") %>%
+  mutate(labels = str_remove_all(labels, "NA, |, NA"))
+
+centrality_scores <- centrality_scores %>%
+  left_join(combined_labels, by = "names")
+
+participants <- data_wNA_wL %>%
+  filter(channel_name %in% centrality_scores$names) %>%
+  distinct(channel_name, .keep_all = T) %>%
+  select(channel_name, participants_count) 
+
+centrality_scores <- centrality_scores %>%
+  left_join(participants, by = c("names" = "channel_name") )
+  
+table_cent <- centrality_scores %>%
+  select(names, indegree, outdegree,labels,participants_count) %>%
+  mutate(indegree = round(indegree, 2),
+         outdegree = round(outdegree, 2)) %>%
+  relocate(participants_count, .after = names) %>%
+  arrange(desc(indegree)) %>%
+  slice(1:15) %>%
+  kbl(format ="latex", booktabs = TRUE) %>%
+  kable_classic()
+
+table_cent
+
+
+
+
+
+
+```
+
+
+# Merge Dataset with Network Data
+```{r}
+
+  
+data_wNA_wL_net <- data_wNA_wL %>%
+  left_join(membership, by = c("channel_name" = "names")) %>%
+  #exclude demonstration organisation channels
+  #filter(channel_name != )
+
+#cluster
+cluster_keep <- cluster_prop$cluster[cluster_prop$prop_groups > 0.02]
+
+data_wNA_wL_cluster <- data_wNA_wL_net %>%
+  filter(cluster %in% cluster_keep)
+
+
+saveRDS(data_wNA_wL_cluster, "~/development/master_thesis_code/Data/Save_Files/data_wNA_wL_cluster_22_02.rds")
+
+```
+
+
+# Export Graph for Gephi
+```{r}
+# edge pruning with backbone package for visualisation
+
+library(backbone)
+backbone <- disparity(graph_weighted, alpha = 0.05, narrative = FALSE)
+
+# add communities
+V(backbone)$cluster <- cluster$membership
+V(backbone)$indegree <- centrality_scores$indegree
+V(backbone)$outdegree <- centrality_scores$outdegree
+V(backbone)$outdegree <- centrality_scores$betweenness
+
+
+# export graph
+
+write_graph(backbone, format = "gml", file = "~/development/master_thesis_code/Data/Save_Files/backbone_graph.gml")
+
+
+```
+# Sankey
+```{r}
+# diagram
+
+cluster_edge <- edgelist %>%
+  left_join(membership, by = c("source" = "names")) %>%
+  rename(source_cluster = cluster) %>%
+  left_join(membership, by = c("target" = "names")) %>%
+  rename(target_cluster = cluster) 
+
+
+# sum the of the edges between clusters
+
+counts <- table(cluster_edge$source_cluster, cluster_edge$target_cluster)
+
+result <- as.data.frame(as.table(counts))
+colnames(result) <- c("Source", "Target", "Count")
+
+# cluster edge list without self loops
+results_wEL <- result %>%
+  filter(Source != Target) 
+
+cluster <- c(1,2,3,5,10,11,14)
+
+result3 <- result %>%
+  filter(Source %in% cluster & Target %in% cluster) %>%
+  filter(Source != Target) 
+
+# install.packages("ggalluvial")
+pacman::p_load(ggalluvial)
+
+
+p1 <- result %>%
+  filter(Source %in% cluster & Target %in% cluster) %>%
+  filter(Source != Target) %>%
+  ggplot(aes(axis1 = Source, axis2 = Target, y = Count)) +
+  geom_alluvium(aes(fill = Source), curve_type = "sigmoid") +
+  geom_stratum() +
+  geom_text(stat = "stratum",
+            aes(label = after_stat(stratum))) +
+  #theme_void() +
+  scale_fill_viridis_d() +
+  theme(legend.position = "none") +
+  #theme(aspect.ratio=2/2) +
+  scale_x_continuous(breaks = 1:2, labels = c("Source", "Target")) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 10, face = "bold")
+  ) +
+  labs(y = NULL, title = "Without Self-Loops")
+
+p2 <- result %>%
+  filter(Source %in% cluster & Target %in% cluster) %>%
+  #filter(Source != Target) %>%
+  ggplot(aes(axis1 = Source, axis2 = Target, y = Count)) +
+  geom_alluvium(aes(fill = Source), curve_type = "sigmoid") +
+  geom_stratum() +
+  geom_text(stat = "stratum",
+            aes(label = after_stat(stratum))) +
+  #theme_void() +
+  scale_fill_viridis_d() +
+  theme(legend.position = "none") +
+  #theme(aspect.ratio=2/2) +
+  scale_x_continuous(breaks = 1:2, labels = c("Source", "Target")) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(size = 10, face = "bold")
+  ) +
+  labs(y = NULL, title = "With Self-Loops")
+
+plot_alu <- plot_grid(p1+p2)
+ 
+ggsave("~/development/master_thesis_code/Plots/plot_alu.png", plot_alu, dpi = 300, width = 10, height = 7)
+
+
+```
+
+
+

@@ -1,0 +1,85 @@
+---
+title: "05_STM_Evaluation"
+author: "Manuel Weigand"
+date: "2024-03-10"
+output: html_document
+---
+# Setup
+```{r}
+
+# load packages
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, data.table, )
+
+# note starttime
+start <- Sys.time()
+
+```
+# Load data
+```{r}
+# load data from stm model
+load("~/development/master_thesis_code/Data/Models/final_model_data.rdata")
+```
+# Explore Data
+```{r}
+
+findThoughts(model, texts = dfm_df$raw_text, topics = 31, n = 50, meta = out$meta)
+
+```
+# Evaluate Words and Text
+
+## Text
+```{r}
+data_prep <- dfm_df %>% 
+  select(new_id, text, channel_name, cluster) %>% 
+  mutate(ID = as.character(new_id))
+
+
+library(tidytext)
+gs_gamma_long <- tidy(model, matrix = "gamma",
+                      document_names = names(out$documents))
+
+
+# This does the same as stm::findThoughts but returns docIDs instead of the
+# error-prone row number in the gamma matrix
+top_gamma <- gs_gamma_long %>% 
+  group_by(topic) %>% 
+  mutate(row = row_number()) %>% 
+  slice_max(gamma, n = 50, with_ties = FALSE) %>% 
+  #filter(gamma >= 0.5) %>%
+  left_join(data_prep, by = c("document" = "ID"))
+
+rio::export(top_gamma, "~/development/master_thesis_code/Validation/top_docs.xlsx")
+
+writexl::write_xlsx(top_gamma, "Validation/top_docs.xlsx")
+
+```
+## Words
+
+```{r Excel}
+library(tidytext)
+topfrex <- function(model, n = 20) {
+  out <- t(labelTopics(model, n = 20)[["frex"]])
+  colnames(out) <- seq_len(model$settings$dim$K)
+  as_tibble(out) %>% 
+    mutate(top = row_number())
+}
+
+out <- tidy(model, "beta") %>% 
+  group_by(topic) %>% 
+  slice_max(order_by = beta, n = 20, with_ties = FALSE) %>% 
+  mutate(top = row_number()) %>% 
+  select(-beta) %>% 
+  pivot_wider(values_from = term, names_from = topic) %>% 
+  # Add an extra row where you can write in topic names
+  add_row(top = NA, .before = 1) %>% 
+  add_row(top = NA) %>% 
+  add_row(top = NA) %>% 
+  bind_rows(topfrex(model, n = 20))
+
+out %>%
+  rio::export(paste0("~/development/master_thesis_code/Validation/topicmodel_topwords", k, ".xlsx"), overwrite = TRUE)
+```
+
+

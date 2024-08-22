@@ -1,0 +1,264 @@
+---
+title: "01_Load Data"
+author: "Manuel Weigand"
+output: html_document
+---
+# Setup
+
+```{r}
+# set working directory
+knitr::opts_knit$set(root.dir = "/home/lsy/development/master_thesis_code")
+
+# load packages
+
+library(tidyverse)
+
+# note starttime
+start <- Sys.time()
+
+```
+
+# Load CSV Data
+
+
+```{r}
+
+# define column types
+cols <- cols(channel_name = col_character(),
+             channel_id = col_double(),
+             title = col_character(),
+             datetime = col_datetime(),
+             participants_count = col_double(),
+             raw_text = col_character(),
+             views = col_double(),
+             id = col_double(),
+             sender = col_character(),
+             post_author = col_character(),
+             is_reply = col_logical(),
+             links = col_character(),
+             reply_to_message_id = col_double(),
+             group_type = col_character(),
+             member_count = col_double(),
+             forward_from = col_character(),
+             forward_from_channel_id = col_double(),
+             forward_from_post_id = col_double(),
+             mentions = col_character(),
+             sender_id = col_character(),
+             mentioned_in_link = col_character())
+
+# access folder with the scrapped data
+filenames <- list.files("~/development/master_thesis_code/Data/Dataset/CSV-Files/csv_data/", pattern="*.csv", full.names=TRUE)
+
+# read csv files
+ldf <- lapply(filenames, read_csv, col_names = TRUE,  na = c("", "NA"), col_types = cols)
+
+data <- bind_rows(ldf) 
+
+
+# keep only for the thesis relevant timeframe
+
+data <- data %>%
+  filter(datetime >= "2020-05-01" & datetime <= "2023-12-01")
+
+# remove channels with less than 100 messages
+data <- data %>%
+  group_by(channel_name) %>%
+  filter(n() > 100) %>%
+  ungroup()
+
+```
+## Dataset Overview
+```{r}
+# how many messages are in the dataset
+nrow(data)
+
+# how many unique enitities are in the dataset
+length(unique(data$channel_name))
+
+# how many groups and channels
+
+data %>%
+  distinct(channel_name, .keep_all = T) %>%
+  count(group_type)
+
+# list of entities
+
+paste0(enities)
+
+enities <- unique(data$channel_name)
+
+
+
+```
+
+
+# Generate unique ids
+```{r}
+# Load original channel list (channels which was used in the short-paper and are still present) and create old_id
+
+channels <- read_csv2("Data/Files/original_groups_id.csv",
+  col_names = c(
+    "channel_link", "channel_id", "channel_name",
+    "channel_description"
+  ),
+  col_types = cols("c", "c", "c", "c")
+)
+
+
+# create old id for messages in channels which also appeared in the previous dataset 
+# the old ID scheme does not work for channel names that don't follow the querdenkenXXX pattern.
+
+data$old_id <- ifelse(data$channel_id %in% channels$channel_id, paste(as.numeric(gsub(".*?([0-9]+).*", "\\1", data$channel_name)), as.numeric(data$id), sep = "0000"), NA)
+
+#Create new unique id for all messages (based on channel id (not name as before) and message id within channel)
+
+data$new_id <- paste(data$channel_id, data$id, sep = "0000")
+
+
+
+# Check if ID is unique
+length(unique(data[["new_id"]]))
+
+length(data[["new_id"]])
+
+head(data)
+
+
+```
+# Create Dataset for Network Analysis
+
+I create a second dataset for network analysis. This contains all messages forwarded between channels/groups. I do this before filtering for NA text values because I want to keep the relational information even if the text is not available. (could be an image or video)
+
+```{r}
+# create dataset for network analysis
+data_network <- data %>%
+  filter(!is.na(forward_from))
+
+# save dataset
+saveRDS(data_network,
+        file = "Data/Save_Files/data_network.rds")
+
+```
+# Remove multimedia content
+```{r}
+# Remove multimedia content from raw text
+
+## remove NA values from raw_text (video, pictures etc.)
+data_wNA <- data %>%
+  filter(!is.na(raw_text))
+
+# kill all links and remove messages which contained just a link
+pacman::p_load(qdapRegex)
+
+data_wNA_wL <- data_wNA %>%
+  mutate(raw_text = rm_url(raw_text))
+
+# trim whitespace and ocunt characters
+data_wNA_wL$raw_text <- trimws(data_wNA_wL$raw_text)
+data_wNA_wL$nchar <- nchar(data_wNA_wL$raw_text)
+
+# remove messages with no characters
+data_wNA_wL <- data_wNA_wL %>%
+  filter(nchar != 0)
+
+# remove non german messages
+data_wNA_wL <- data_wNA_wL %>%
+  mutate(cld2 = cld2::detect_language(text = raw_text, plain_text = FALSE)) %>%
+  filter(cld2 == "de")
+
+```
+
+# Create sample for labeling
+```{r}
+# read in all ids from previous dataset
+old_dataset_id <- read_csv("Data/Files/message_ids_old.csv")
+
+# create new column with 1 if message is in old dataset and 0 if not
+data_wNA_wL$old_dataset <- ifelse(data_wNA_wL$old_id %in% old_dataset_id$old_id, 1, 0)
+
+# create sample for labeling just from new messages
+data_sample <- data_wNA_wL %>%
+  filter(old_dataset == 0) %>%
+  slice_sample(n = 3000, replace = FALSE) %>%
+  select(new_id, raw_text) %>%
+  mutate(label = NA)
+
+# save all to xlsx for coding
+library(writexl)
+
+write_xlsx(data_sample, path = "Data/Dataset/Coding/data_sample.xlsx")
+
+
+          
+```
+# Merge trainingdata
+```{r}
+# read in coded data
+library(readxl)
+data_coded_new <- read_xlsx("Data/Dataset/Trainingdata/data_sample_coded.xlsx") %>%
+  rename(ID = new_id, text = raw_text)
+table(data_coded_new$label)
+
+# filter out 4 not usable messages 
+data_coded_new <- data_coded_new %>%
+  filter(label != 2)
+table(data_coded_new$label)
+
+# filter out possible duplicates
+data_coded_new <- data_coded_new %>%
+  filter(!duplicated(text))
+
+# read in old coded data
+data_coded_old <- read_csv("Data/Dataset/Trainingdata/data_df_20220622.csv") %>%
+  select(ID, Message, Label) %>%
+  mutate(ID = as.character(ID)) %>%
+  rename(label = Label, text = Message)
+
+# merge both dataframes
+
+data_coded <- bind_rows(data_coded_new, data_coded_old) %>%
+  slice(sample(1:n()))
+
+# check for unique messages
+length(unique(data_coded[["ID"]]))
+length(data_coded[["ID"]])
+
+# save coded data as csv
+write.csv(data_coded,
+          "Data/Dataset/Trainingdata/data_coded.csv",
+          row.names = F)
+
+
+```
+
+# Save Data
+```{r}
+
+saveRDS(data_wNA_wL,
+        file = "Data/Save_Files/data_wNA_wL.rds")
+
+# load data
+
+data_wNA_wL <- readRDS("~/development/master_thesis_code/Data/Save_Files/data_wNA_wL.rds")
+
+# write as csv for prediction
+
+write.csv(data_wNA_wL,
+          "Data/Dataset/data_wNA_wL.csv",
+          row.names = F)
+
+
+```
+
+```{r}
+
+sessionInfo()
+Sys.time()
+Sys.time() - start
+
+```
+
+
+
+
+
